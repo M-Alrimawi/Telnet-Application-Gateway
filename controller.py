@@ -79,7 +79,7 @@ class Controller(RyuApp):
         in_port = ev.msg.match['in_port']
         data = ""
 
-        # if packet is telnet client or server
+        # if packet is from telnet client or server
         if pkt.get_protocol(tcp.tcp) and (pkt.get_protocol(tcp.tcp).dst_port == 23 or pkt.get_protocol(tcp.tcp).src_port == 23):
             eth_header = pkt.get_protocol(ethernet.ethernet)
             tcp_pkt = pkt.get_protocol(tcp.tcp)
@@ -91,7 +91,6 @@ class Controller(RyuApp):
             src_port = tcp_pkt.src_port
             dst_port = tcp_pkt.dst_port
 
-
             # if FIN flag
             if (tcp_pkt.bits & tcp.TCP_FIN):
                 # If packet is from a Server
@@ -101,6 +100,7 @@ class Controller(RyuApp):
                 else:
                     session = TCPSession(server_ip=dst_ip, client_ip=src_ip, client_port=src_port)
                 if session in self.allowed_users:
+                    # Delete the forwarding rule (sender -> receiver)
                     match = parser.OFPMatch(
                         eth_type=0x0800,
                         ip_proto=6,
@@ -110,6 +110,43 @@ class Controller(RyuApp):
                         tcp_dst=dst_port
                     )
                     self.__delete_flow(datapath=datapath, match=match)
+                    if src_ip == session.client_ip:
+                        self.logger.info("❌\tForward Rule Client -> Server removed")
+                    else:
+                        self.logger.info("❌\tForward Rule Server -> Client removed")
+
+                    # Delete the FIN rule and the FIN, ACK rule (sender -> receiver)
+                    match = parser.OFPMatch(
+                        eth_type=0x0800,
+                        ip_proto=6,
+                        ipv4_src=src_ip,
+                        ipv4_dst=dst_ip,
+                        tcp_src=src_port,
+                        tcp_dst=dst_port,
+                        tcp_flags=tcp.TCP_FIN
+                    )
+                    self.__delete_flow(datapath=datapath, match=match)
+                    if src_ip == session.client_ip:
+                        self.logger.info("❌\tFIN Rule Client -> Server removed")
+                    else:
+                        self.logger.info("❌\tFIN Rule Server -> Client removed")
+                    match = parser.OFPMatch(
+                        eth_type=0x0800,
+                        ip_proto=6,
+                        ipv4_src=src_ip,
+                        ipv4_dst=dst_ip,
+                        tcp_src=src_port,
+                        tcp_dst=dst_port,
+                        tcp_flags=0x11
+                    )
+                    self.__delete_flow(datapath=datapath, match=match)
+                    if src_ip == session.client_ip:
+                        self.logger.info("❌\tFIN, ACK Rule Client -> Server removed")
+                    else:
+                        self.logger.info("❌\tFIN, ACK Rule Server -> Client removed")
+
+                    # Remove the session from the allowed users if it has sent FIN twice in the that session
+                    # (i.e. client and server have both sent FIN)
                     i = self.allowed_users.index(session)
                     actual_session = self.allowed_users[i]
                     actual_session.fin_count += 1
@@ -117,8 +154,6 @@ class Controller(RyuApp):
                         self.allowed_users.remove(actual_session)
                     else:
                         self.allowed_users[i] = actual_session
-                else:
-                    self.logger.critical("❗️\ttelnet packet with FIN but no permissions")
                 self.__route_packet(datapath=datapath, buffer_id=buffer_id, in_port=in_port, data=ev.msg.data, dst_mac=dst_mac)
 
             # if packet is from telnet server
@@ -160,7 +195,7 @@ class Controller(RyuApp):
                             tcp_flags=tcp.TCP_FIN
                         )
                         self.__add_flow(datapath, 4, match, action)
-                        self.logger.info("🔒\t FIN Rule 1")
+                        self.logger.info("🔒\t FIN Rule Client -> Server added")
                         match = parser.OFPMatch(
                             eth_type=0x0800,
                             ip_proto=6,
@@ -168,11 +203,11 @@ class Controller(RyuApp):
                             ipv4_dst=dst_ip,
                             tcp_src=src_port,
                             tcp_dst=dst_port,
-                            tcp_flags=(tcp.TCP_FIN | tcp.TCP_ACK)
+                            tcp_flags=0x11
                         )
                         self.__add_flow(datapath, 4, match, action)
-                        self.logger.info("🔒\t FIN Rule 2")
-                        # FIN or(FIN,ACK) rule from server -> client = forward to controller
+                        self.logger.info("🔒\t FIN, ACK Rule Client -> Server added")
+                        # FIN or (FIN,ACK) rule from server -> client = forward to controller
                         match = parser.OFPMatch(
                             eth_type=0x0800,
                             ip_proto=6,
@@ -183,7 +218,7 @@ class Controller(RyuApp):
                             tcp_flags=tcp.TCP_FIN
                         )
                         self.__add_flow(datapath, 4, match, action)
-                        self.logger.info("🔒\t FIN Rule 3")
+                        self.logger.info("🔒\t FIN Rule Server -> Client added")
                         match = parser.OFPMatch(
                             eth_type=0x0800,
                             ip_proto=6,
@@ -191,10 +226,10 @@ class Controller(RyuApp):
                             ipv4_dst=src_ip,
                             tcp_src=dst_port,
                             tcp_dst=src_port,
-                            tcp_flags=(tcp.TCP_FIN | tcp.TCP_ACK)
+                            tcp_flags=0x11
                         )
                         self.__add_flow(datapath, 4, match, action)
-                        self.logger.info("🔒\t FIN Rule 4")
+                        self.logger.info("🔒\t FIN, ACK Rule Server -> Client added")
 
                         # if port to reach dst is known => forward packet + create rules
                         out_port = self.__get_port(datapath=datapath, mac=dst_mac)
@@ -211,7 +246,7 @@ class Controller(RyuApp):
                                 tcp_dst=dst_port
                             )
                             self.__add_flow(datapath, 3, match, action)
-                            self.logger.info("🔒\t Forward Rule c->s")
+                            self.logger.info("🔒\t Forward Rule Client -> Server added")
                             # forward rule from server -> client
                             action = [parser.OFPActionOutput(in_port)]
                             match = parser.OFPMatch(
@@ -223,7 +258,7 @@ class Controller(RyuApp):
                                 tcp_dst=src_port
                             )
                             self.__add_flow(datapath, 3, match, action)
-                            self.logger.info("🔒\t Forward Rule s->c")
+                            self.logger.info("🔒\t Forward Rule Server -> Client added")
 
                             self.__forward_packet(datapath=datapath, buffer_id=buffer_id, in_port=in_port, data=ev.msg.data, out_port=out_port)
 
@@ -240,7 +275,7 @@ class Controller(RyuApp):
                                 tcp_dst=dst_port
                             )
                             self.__add_flow(datapath, 3, match, action)
-                            self.logger.info("🔒\t Forward Rule c->s")
+                            self.logger.info("🔒\t Forward Rule Client -> Server added")
                             # forward rule from server -> client
                             action = [parser.OFPActionOutput(in_port)]
                             match = parser.OFPMatch(
@@ -252,10 +287,9 @@ class Controller(RyuApp):
                                 tcp_dst=src_port
                             )
                             self.__add_flow(datapath, 3, match, action)
-                            self.logger.info("🔒\t Forward Rule s->c")
+                            self.logger.info("🔒\t Forward Rule Server -> Client added")
 
                             self.__flood_packet(datapath=datapath, buffer_id=buffer_id, in_port=in_port, data=ev.msg.data)
-                            self.logger.info("\ttelnet client is giving username without knowing how to reach server")
 
                     # if the username is not whitelisted => do NOT forward
                     else:

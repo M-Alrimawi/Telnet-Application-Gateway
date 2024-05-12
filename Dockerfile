@@ -6,4 +6,4 @@ COPY controller.py .
 
 EXPOSE 6633
 
-CMD [ "--ofp-tcp-listen-port", "6633", "--verbose", "./controller.py" ]
+CMD [ "--ofp-tcp-listen-port", "6633", "./controller.py" ]
