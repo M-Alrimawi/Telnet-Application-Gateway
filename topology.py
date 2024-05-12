@@ -116,3 +116,4 @@ def runTelnetNetworkTopo():
 if __name__ == '__main__':
     # This runs if this file is executed directly
     setLogLevel('info')
+    runTelnetNetworkTopo()
